@@ -1,15 +1,20 @@
 // UDP_Communication_Framework.cpp : Defines the entry point for the console application.
 //
 
+
+// TODO: add system libraries for reading 
 #pragma comment(lib, "ws2_32.lib")
 #include "stdafx.h"
 #include <winsock2.h>
 #include "ws2tcpip.h"
 
+// TODO: edit IP to send it to your friend and not to yourself
 #define TARGET_IP	"127.0.0.1"
 
 #define BUFFERS_LEN 1024
 
+
+// TODO: uncomment the one you are currently building and comment the other
 #define SENDER
 //#define RECEIVER
 
@@ -56,6 +61,8 @@ int main()
 	char buffer_rx[BUFFERS_LEN];
 	char buffer_tx[BUFFERS_LEN];
 
+
+// ----- TODO: ONDRA - MAKE A SENDER -----
 #ifdef SENDER
 
 	sockaddr_in addrDest;
@@ -71,7 +78,13 @@ int main()
 	closesocket(socketS);
 
 #endif // SENDER
+// ----- END OF SENDER EDITING -----
 
+
+
+
+
+// ----- TODO: VOJTA - MAKE A RECEIVER -----
 #ifdef RECEIVER
 
 	printf("Waiting for datagram ...\n");
@@ -92,6 +105,12 @@ int main()
 
 	closesocket(socketS);
 #endif
+// ----- END OF RECEIVER EDITING -----
+
+
+
+
+
 	//**********************************************************************
 
 	getchar(); //wait for press Enter
