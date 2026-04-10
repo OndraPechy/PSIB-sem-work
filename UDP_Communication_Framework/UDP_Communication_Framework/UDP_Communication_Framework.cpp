@@ -21,8 +21,8 @@
 
 
 // TODO: uncomment the one you are currently building and comment the other
-//#define SENDER
-#define RECEIVER
+#define SENDER
+//#define RECEIVER
 
 #ifdef SENDER
 #define TARGET_PORT 5111
@@ -150,6 +150,8 @@ int main()
 	sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", endingMsg.c_str());
 	sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
 	memset(buffer_tx, 0, sizeof(buffer_tx));
+
+	file.close();
 
 	closesocket(socketS);
 
