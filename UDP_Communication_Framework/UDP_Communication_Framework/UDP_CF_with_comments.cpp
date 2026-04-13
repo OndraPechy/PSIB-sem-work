@@ -77,25 +77,39 @@ int main()
 	addrDest.sin_port = htons(TARGET_PORT);
 	InetPton(AF_INET, _T(TARGET_IP), &addrDest.sin_addr.s_addr);
 
-	// Opening the file for binary reading
+
+	// int sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "Hello world payload!\n"); //put some data to buffer
+	// printf("Sending packet.\n");
+	// sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
+
+	//closesocket(socketS);
+
+	// std znamena standartni knihovna, dvojtecka znamena, ze se clovek zanori do dane knihovny a jde v ni neco hledat
+	// takto otevru soubor pro binarni cteni v c++
 	std::ifstream file(PICTURE_NAME, std::ios::in | std::ios::binary);
 
+	// ify a loopy pisu v c++ uplne stejne jako v c
 	if (!file) {
+		// cerr je znakovy chybovy vystup, neco jako stderr v c, << jsou vkladaci operatory (vlozi na chybovy vystup), endl znamena endline
 		std::cerr << "Could not open the file!" << std::endl;
 		return 1;
 	}
 
-	// Getting the file size
-	file.seekg(0, std::ios::end); 
-	std::streamsize fileSize = file.tellg(); 
-	file.seekg(0, std::ios::beg);
+	// zjistim velikost souboru, seekg presune kurzor v souboru na konkretni misto
+	file.seekg(0, std::ios::end); // presunu na konec
+	// std::streamsize je datovy typ na uchovani velikosti souboru
+	std::streamsize fileSize = file.tellg(); // tellg vrati cislo pozice kde aktualne je
+	file.seekg(0, std::ios::beg); // presunu zpet na zacatek
 
 
 
-	// Creating all 3 header messages
+	// vytvorim si jednotlive casti hlavicky
 	std::string fileNameSendMsg = "NAME=" + std::string(PICTURE_NAME);
+	// vlozim si headerMsg do bufferu
 	int sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", fileNameSendMsg.c_str());
+	// a odeslu hlavicku
 	sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
+	// procistim buffer
 	memset(buffer_tx, 0, sizeof(buffer_tx));
 	Sleep(10);
 
@@ -112,26 +126,36 @@ int main()
 	memset(buffer_tx, 0, sizeof(buffer_tx));
 	Sleep(10);
 
+	// v hlavnim loopu budu take posilat to celkove
 	int offset_num = 0;
 
-	// Loop for sendinf picture data
+	// dam nekonecny loop
 	while (true) {
+
+		// nactu na indexy 4-1023 v bufferu 
 		file.read(buffer_tx + 8, BUFFERS_LEN - 8);
+		// zjistim, kolik jsem nacetl
 		int fileReadLen = file.gcount();
+		// pokud jsem nacetl 0, asi jsem u konce a koncim
 		if (fileReadLen == 0) {
 			break;
 		}
+		// nactu offset do buffer_tx na prvni 4 pozice
 		uint32_t offset_bin = offset_num;
 		memcpy(buffer_tx, "DATA", 4);
 		memcpy(buffer_tx + 4, &offset_bin, 4);
+		// zjistim delku packetu
 		int sendingPacketLength = fileReadLen + 8;
+		// poslu packet
 		sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
 		Sleep(1);
+		// prictu offset
 		offset_num += fileReadLen;
+		// procistim buffer
 		memset(buffer_tx, 0, sizeof(buffer_tx));
 	}
 
-	// Sending ending message (many times to be sure it doesn't get lost)
+	// na zaver poslu end zpravu
 	for (int i = 0; i < 50; ++i) {
 		std::string endingMsg = "STOP\n";
 		sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", endingMsg.c_str());
@@ -144,62 +168,141 @@ int main()
 	closesocket(socketS);
 
 #endif // SENDER
+	// ----- END OF SENDER EDITING -----
 
 
 
 
 
-	// ----- RECEIVER -----
+	// ----- TODO: VOJTA - MAKE A RECEIVER -----
 #ifdef RECEIVER
 
+	/* Should be deleted by gemini
+	printf("Waiting for datagram ...\n");
+
+	int receivedPacketLength = recvfrom(socketS, buffer_rx, sizeof(buffer_rx), 0, (sockaddr*)&from, &fromlen);
+
+	if (receivedPacketLength == SOCKET_ERROR) {
+		printf("Socket error!\n");
+		getchar();
+		return 1;
+	}
+	else
+	{
+		printf("Bytes received: %d\n", receivedPacketLength);
+		buffer_rx[receivedPacketLength] = 0x00;
+		printf("Datagram: %s", buffer_rx);
+	}
+
+	closesocket(socketS);
+	*/
+
 	std::cout << "Waiting for data..\n";
+
+	//creates a "roura" for writing into a file
 	std::ofstream outputFile;
+	//bool for while if we are still receiving
 	bool isReceiving = true;
+	//array for the name of the file, it is a safety thing if we lost the paket
 	char filename[256] = "received.bin";
 
-	// Loop for receiving
 	while (isReceiving) {
+		//how does recvfrom work - takes data from the network and stores it into the buffer_rx
+		//finds out the IP address, 
+		// (sockaddr*)&from = overwrite for sockaddr
 		int receivedLength = recvfrom(socketS, buffer_rx, sizeof(buffer_rx), 0, (sockaddr*)&from, &fromlen);
 
 		if (receivedLength == SOCKET_ERROR) {
 			std::cout << "Socket error!\n";
 			break;
 		}
-						// Searching for "NAME="
+
+
+
+		// ---------------------- I CHANGED THIS PART SO THAT IT FITS THE SENDER DESIGN ----------------------
+		
+						//searching for "NAME="
 						if (strncmp(buffer_rx, "NAME=", 5) == 0) {
+							//Length of the name without the "NAME"
 							int nameLength = receivedLength - 5;
+
+							//check if the name can fit into the array
 							if (nameLength > 0 && nameLength < 256) {
+								//we copy the name from the buffer
 								memcpy(filename, buffer_rx + 5, nameLength);
+								//ending sequence for the name
 								filename[nameLength] = '\0';
+
 								std::cout << "We have received a file with a name: " << filename << "\n";
 							}
 						}
 
-						// Searching for "SIZE="
 						else if (strncmp(buffer_rx, "SIZE=", 5) == 0) {
 							std::cout << "File size info received: " << (buffer_rx + 5) << "\n";
 						}
 
-						// Searching for "START="
+
 						else if (strncmp(buffer_rx, "START", 5) == 0) {
 							std::cout << "We have received START and opening the file!\n";
+							//opening the file in binary
 							outputFile.open(filename, std::ios::binary);
 							if (!outputFile.is_open()) {
 								std::cout << "We could not create the file!\n";
 							}
 						}
+		
+		// ---------------------- END OF PREVIOUS VOJTA'S CODE ----------------------
+		/*
+		if (strncmp(buffer_rx, "NAME=", 5) == 0) {
+			char* newline_pos = strchr(buffer_rx, '\n');
+			if (newline_pos != nullptr) {
+				//Length of the name without the "NAME"
+				int nameLength = newline_pos - (buffer_rx + 5);
 
-		//Searching for "DATA"
+				//check if the name can fit into the array
+				if (nameLength > 0 && nameLength < 256) {
+					//we copy the name from the buffer
+					memcpy(filename, buffer_rx + 5, nameLength);
+					//ending sequence for the name
+					filename[nameLength] = '\0';
+
+					std::cout << "We have received a file with a name: " << filename << "\n";
+				}
+			}
+
+			std::cout << "Opening the file!\n";
+			//opening the file in binary 
+			outputFile.open(filename, std::ios::binary);
+			if (!outputFile.is_open()) {
+				std::cout << "We could not create the file!\n";
+			}
+		}
+		*/
+		// ---------------------- END OF MY CHANGE ----------------------
+
+
+
+
+
 		else if (strncmp(buffer_rx, "DATA", 4) == 0) {
 			if (receivedLength >= 8) {
-				//MOVE by 4 bytes for the first byte of the picture
-				//first * - need to look at it as a 4byte number
-				//second * - dereference
+
+				//quite complicated, we have received a message with 
+				//[D][A][T][A][byte_of_the_number][byte_of_the_number] .. 2 more times
+				// then we have the [first_byte_of_the_picture] etc...
+				// and we need to get the number -> so we move buffer by 4 
+				// we need to also do casting(pretypovani, idk jak se to rekne), 
+				// to this point we were looking at it as a "letter" but we need to look 
+				// at it as a 4byte number that's the * in the uint brackets
+				// second * is for telling the compiler to go grab 4bytes and 
+				// make it into a number and give it to us(proste dereference)
 				uint32_t offset = *(uint32_t*)(buffer_rx + 4);
 
 				int dataLength = receivedLength - 8;
 
 				if (outputFile.is_open()) {
+					//seek - finds the cursor, and we also need to give the offset, 
+					//because the message could be received not in order
 					outputFile.seekp(offset);
 					outputFile.write(buffer_rx + 8, dataLength);
 
@@ -221,13 +324,15 @@ int main()
 	std::cout << "Transfer was a success!\n";
 
 #endif
+	// ----- END OF RECEIVER EDITING -----
+
 
 
 
 
 		//**********************************************************************
 
-	getchar();
+	getchar(); //wait for press Enter
 	return 0;
 }
 
