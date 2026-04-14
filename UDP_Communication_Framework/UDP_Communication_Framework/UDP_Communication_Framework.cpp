@@ -15,7 +15,7 @@
 
 
 // TODO: Edit IP to send it to your friend and not to yourself
-#define TARGET_IP "10.1.1.197"
+#define TARGET_IP "127.0.0.1"
 
 #define BUFFERS_LEN 1024
 
@@ -132,7 +132,7 @@ int main()
 	}
 
 	// Sending ending message (many times to be sure it doesn't get lost)
-	for (int i = 0; i < 50; ++i) {
+	for (int i = 0; i < 3; ++i) {
 		std::string endingMsg = "STOP\n";
 		sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", endingMsg.c_str());
 		sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
