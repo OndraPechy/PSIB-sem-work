@@ -15,7 +15,7 @@
 
 
 // TODO: Edit IP to send it to your friend and not to yourself
-#define TARGET_IP "127.0.0.1"
+#define TARGET_IP "10.1.4.191"
 
 #define BUFFERS_LEN 1024
 
