@@ -1,0 +1,26 @@
+# Visual Studio dočasné soubory a databáze
+.vs/
+*.VC.db
+*.VC.db-shm
+*.VC.db-wal
+ipch/
+
+# Výstupy kompilace (binárky a mezisoubory)
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.exe
+*.dll
+*.obj
+*.pdb
+*.ilk
+*.pch
+*.log
+*.tlog
+*.recipe
+*.lastbuildstate
+
+# Uživatelské nastavení (každý programátor může mít jiné)
+*.vcxproj.user
+*.suo
