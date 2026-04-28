@@ -10,12 +10,12 @@
 #include <string>
 #include <filesystem>
 
-#define TARGET_IP "10.1.3.239"
+#define TARGET_IP "10.1.4.62"
 
 #define BUFFERS_LEN 1024
 
-#define SENDER
-//#define RECEIVER
+//#define SENDER
+#define RECEIVER
 
 #ifdef SENDER
 #define TARGET_PORT 5111
@@ -25,7 +25,7 @@
 #ifdef RECEIVER
 #define TARGET_PORT 5222
 #define LOCAL_PORT 5111
-#endif // RECEIVER
+#endif RECEIVER
 
 
 void InitWinsock()
@@ -164,30 +164,33 @@ int main()
 
 	// Loop for receiving
 	while (isReceiving) {
+
+		memset(buffer_rx, 0, sizeof(buffer_rx));
+
 		int receivedLength = recvfrom(socketS, buffer_rx, sizeof(buffer_rx), 0, (sockaddr*)&from, &fromlen);
 		if (receivedLength == SOCKET_ERROR) {
 			std::cout << "Socket error!\n";
 			break;
 		}
-						if (strncmp(buffer_rx, "NAME=", 5) == 0) {
-							int nameLength = receivedLength - 5;
-							if (nameLength > 0 && nameLength < 256) {
-								memcpy(filename, buffer_rx + 5, nameLength);
-								filename[nameLength] = '\0';
-								std::cout << "We have received a file with a name: " << filename << "\n";
-							}
-						}
-						else if (strncmp(buffer_rx, "SIZE=", 5) == 0) {
-							std::cout << "File size info received: " << (buffer_rx + 5) << "\n";
-						}
-						else if (strncmp(buffer_rx, "START", 5) == 0) {
-							std::cout << "We have received START and opening the file!\n";
-							outputFile.open(filename, std::ios::binary);
-							if (!outputFile.is_open()) {
-								std::cout << "We could not create the file!\n";
-							}
-							receivedPackets = 0; 
-						}
+		if (strncmp(buffer_rx, "NAME=", 5) == 0) {
+			int nameLength = receivedLength - 5;
+			if (nameLength > 0 && nameLength < 256) {
+				memcpy(filename, buffer_rx + 5, nameLength);
+				filename[nameLength] = '\0';
+				std::cout << "We have received a file with a name: " << filename << "\n";
+			}
+		}
+		else if (strncmp(buffer_rx, "SIZE=", 5) == 0) {
+			std::cout << "File size info received: " << (buffer_rx + 5) << "\n";
+		}
+		else if (strncmp(buffer_rx, "START", 5) == 0) {
+			std::cout << "We have received START and opening the file!\n";
+			outputFile.open(filename, std::ios::binary);
+			if (!outputFile.is_open()) {
+				std::cout << "We could not create the file!\n";
+			}
+			receivedPackets = 0; 
+		}
 		else if (strncmp(buffer_rx, "DATA", 4) == 0) {
 			if (receivedLength >= 8) {
 				uint32_t offset = *(uint32_t*)(buffer_rx + 4);
@@ -198,13 +201,13 @@ int main()
 
 					receivedPackets++; 
 
-					std::cout << "\rReceived pacet number: " << receivedPackets;
+					std::cout << "Received packet number: " << receivedPackets << std::endl;
 
 				}
 			}
 		}
 		else if (strncmp(buffer_rx, "STOP", 4) == 0) {
-			std::cout << "\nWe have received STOP, that means exiting our connection!\n";
+			std::cout << "We have received STOP, that means exiting our connection!\n";
 
 			if (outputFile.is_open()) {
 				outputFile.close();
