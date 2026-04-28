@@ -157,6 +157,8 @@ int main()
 	bool isReceiving = true;
 	char filename[256] = "received.bin";
 
+	int receivedPackets = 0; 
+
 	// Loop for receiving
 	while (isReceiving) {
 		int receivedLength = recvfrom(socketS, buffer_rx, sizeof(buffer_rx), 0, (sockaddr*)&from, &fromlen);
@@ -187,6 +189,7 @@ int main()
 							if (!outputFile.is_open()) {
 								std::cout << "We could not create the file!\n";
 							}
+							receivedPackets = 0; 
 						}
 
 		//Searching for "DATA"
@@ -203,13 +206,17 @@ int main()
 					outputFile.seekp(offset);
 					outputFile.write(buffer_rx + 8, dataLength);
 
+					receivedPackets++; 
+
+					std::cout << "\rReceived pacet number: " << receivedPackets;
+
 				}
 			}
 		}
 
 
 		else if (strncmp(buffer_rx, "STOP", 4) == 0) {
-			std::cout << "We have received STOP, that means exiting our connection!\n";
+			std::cout << "\nWe have received STOP, that means exiting our connection!\n";
 
 			if (outputFile.is_open()) {
 				outputFile.close();
