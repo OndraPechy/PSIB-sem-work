@@ -10,7 +10,7 @@
 #include <string>
 #include <filesystem>
 
-#define TARGET_IP "10.1.4.191"
+#define TARGET_IP "10.1.3.239"
 
 #define BUFFERS_LEN 1024
 
@@ -64,11 +64,12 @@ int main()
 	addrDest.sin_port = htons(TARGET_PORT);
 	InetPton(AF_INET, _T(TARGET_IP), &addrDest.sin_addr.s_addr);
 
-	std::cout << "WELCOME TO THE FILE SENDING PROGRAM!";
+	std::cout << "WELCOME TO THE FILE SENDING PROGRAM!\n\n";
 	std::string filePath;
-	std::cout << "Please provide a file name. In case it's in other directory than the executed program provide the file path!";
+	std::cout << "Please provide a file name. In case it's in other directory than the executed program provide the file path!\n";
 	std::cout << "FILE: ";
 	std::getline(std::cin, filePath);
+	std::cout << "*********************************************\n";
 
 	// najdu posledni lomitko
 	size_t lastSlash = filePath.find_last_of("\\");
@@ -77,7 +78,7 @@ int main()
 
 	std::ifstream file(filePath, std::ios::in | std::ios::binary);
 	if (!file) {
-		std::cerr << "Could not open the file!" << std::endl;
+		std::cerr << "Could not open the file!\n" << std::endl;
 		return 1;
 	}
 
@@ -85,9 +86,12 @@ int main()
 	std::streamsize fileSize = file.tellg(); 
 	file.seekg(0, std::ios::beg);
 
-	std::string fileNameSendMsg = "NAME=" + std::string(filePath);
+	std::string fileNameSendMsg = "NAME=" + fileName;
 	int sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", fileNameSendMsg.c_str());
-	std::cout << "I'm sending the file NAME!";
+	// takto v c++ spojuju stringy
+	std::cout << "The file NAME is: " << fileName << "\n";
+	std::cout << "I'm sending the file NAME!\n";
+	std::cout << "*********************************************\n";
 	sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
 	memset(buffer_tx, 0, sizeof(buffer_tx));
 	Sleep(10);
@@ -95,14 +99,18 @@ int main()
 	std::string fileSizeString = std::to_string(fileSize);
 	std::string fileSizeSendMsg = "SIZE=" + fileSizeString + "\n";
 	sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", fileSizeSendMsg.c_str());
-	std::cout << "I'm sending the file SIZE!";
+	// takto v c++ spojuju stringy
+	std::cout << "The file SIZE is: " << fileSizeString << "\n";
+	std::cout << "I'm sending the file SIZE!\n";
+	std::cout << "*********************************************\n";
 	sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
 	memset(buffer_tx, 0, sizeof(buffer_tx));
 	Sleep(10);
 
 	std::string startMsg = "START\n";
 	sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", startMsg.c_str());
-	std::cout << "I'm sending the START signal!";
+	std::cout << "I'm sending the START signal!\n";
+	std::cout << "*********************************************\n";
 	sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
 	memset(buffer_tx, 0, sizeof(buffer_tx));
 	Sleep(10);
@@ -121,21 +129,22 @@ int main()
 		memcpy(buffer_tx + 4, &offset_bin, 4);
 		int sendingPacketLength = fileReadLen + 8;
 		sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
-		std::cout << "Sent packet number: " << packetNum << std::endl;
+		std::cout << "Sent packet number: " << packetNum << "\n";
 		Sleep(1);
 		offset_num += fileReadLen;
 		packetNum++;
 		memset(buffer_tx, 0, sizeof(buffer_tx));
 	}
-	std::cout << "All packets were succesfully send!";
+	std::cout << "All packets were succesfully send!\n";
+	std::cout << "*********************************************\n";
 
-	for (int i = 0; i < 3; ++i) {
-		std::string endingMsg = "STOP\n";
-		sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", endingMsg.c_str());
-		std::cout << "I'm sending the STOP signal!";
-		sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
-		memset(buffer_tx, 0, sizeof(buffer_tx));
-	}
+	
+	std::string endingMsg = "STOP\n";
+	sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", endingMsg.c_str());
+	std::cout << "I'm sending the STOP signal!\n";
+	sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
+	memset(buffer_tx, 0, sizeof(buffer_tx));
+	
 
 	file.close();
 
