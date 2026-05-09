@@ -10,12 +10,19 @@
 #include <string>
 #include <filesystem>
 
-#define TARGET_IP "10.1.4.62"
+
+
+// IMPORTED LIBRABRIES:
+// ten kod v tomto je takzvany header only, takze chilluju
+#include "crc.h"
+#define TARGET_IP "10.1.3.239"
 
 #define BUFFERS_LEN 1024
+#define HEADER_LENGTH 13
+#define WAIT_TIMER 10000
 
-//#define SENDER
-#define RECEIVER
+#define SENDER
+// #define RECEIVER
 
 #ifdef SENDER
 #define TARGET_PORT 5111
@@ -27,6 +34,25 @@
 #define LOCAL_PORT 5111
 #endif RECEIVER
 
+struct packetData {
+	std::string identifier;
+	const char* data;
+	int length;
+	uint32_t offset;
+};
+
+struct senderInfo {
+	SOCKET socketS;
+	sockaddr_in addrDest;
+	char alternatingBit;
+};
+void createPacketWithoutCRC(char* buffer_tx, packetData sendData, char alternatingBit);
+void addCRCToPacket(char* buffer_tx, uint32_t(&table)[256], int packetLength);
+void sendPacket(packetData sendData, senderInfo& info, uint32_t(&table)[256]);
+bool checkReceivedAcknowledge(char* buffer_rx, char alternatingBit,
+							  uint32_t(&table)[256], int packetLength);
+bool checkBufferForCRC(char* buffer_rx, uint32_t(&table)[256], int packetLength);
+
 
 void InitWinsock()
 {
@@ -37,13 +63,13 @@ void InitWinsock()
 int main()
 {
 	SOCKET socketS;
-
 	InitWinsock();
 
 	struct sockaddr_in local;
-	struct sockaddr_in from;
-
-	int fromlen = sizeof(from);
+	// TOHLE JE TAKY LEPSI MIT VE SVOJI FUNKCI
+	// struct sockaddr_in from;
+	// int fromlen = sizeof(from);
+	
 	local.sin_family = AF_INET;
 	local.sin_port = htons(LOCAL_PORT);
 	local.sin_addr.s_addr = INADDR_ANY;
@@ -55,16 +81,52 @@ int main()
 		getchar();
 		return 1;
 	}
-	char buffer_rx[BUFFERS_LEN];
-	char buffer_tx[BUFFERS_LEN];
+	DWORD timeoutMs = 10000;
+	// SOL_SOCKET rika ze menime nastaveni na systemove urovni socketu
+	// SO_RCVTIMEO rika ze zapiname schopnost received timeout, 
+	setsockopt(socketS, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeoutMs, sizeof(timeoutMs));
+	// BUFFERY BUDE LEPSI KDYZ SI VYTVORI KAZDY SAM TAM, KDE JE POTREBUJE
+	// char buffer_rx[BUFFERS_LEN];
+	// char buffer_tx[BUFFERS_LEN];
+
+	// vygeneruju si tu crc tabulku z te pomocne funkce
+	uint32_t table[256];
+	crc32::generate_table(table);
+
 
 #ifdef SENDER
+	// ---------------- ONDRA COMMENTS - TO BE DELETED ---------------
+	// na SEQUENCE NUMBER (jestli prisel tento nebo ten predchozi paket) mi staci 1 bit takzvany alternating bit
+	//	- poslu prvni paket s bajtem 0
+	//		- kdyz nedostanu potvrzeni, ze si to precetl, budu posilat dal ten samy paket s bajtem 0
+	//		- kdyz dostanu potvrzeni, jsem happy a poslu dalsi s bajtem 1
+	// - pak pokracuju to same, akorat s bitem 1, pak zas 0 atd
+
+
+	// paket bude slozeny nasledovne:
+	// 4byte - "DATA"
+	// 4byte - offset
+	// 4byte - CRC
+	// 1byte - sequence number
+	// 1011byte - data of the picture
+
+
+	// CRC je generovano pro nuly na indexech 8-11 v paketu
+	//  - pak si Vojti budes muset nejdriv vytahnout CRC z indexu 8-11, ty indexy pak vynulovat a pro cely ten paket vcetne vynulovanych indexu zavolat CRC
+
+
+	// ZVAZ VYMAZANI SLEEPU POKUD TO FUNGUJE I BEZ NICH
 	sockaddr_in addrDest;
 	addrDest.sin_family = AF_INET;
 	addrDest.sin_port = htons(TARGET_PORT);
 	InetPton(AF_INET, _T(TARGET_IP), &addrDest.sin_addr.s_addr);
 
-	std::cout << "WELCOME TO THE FILE SENDING PROGRAM!\n\n";
+	// vytvorim si tady ten muj struct
+	senderInfo myContext;
+	myContext.socketS = socketS;
+	myContext.addrDest = addrDest;
+	myContext.alternatingBit = 0;
+
 	std::string filePath;
 	std::cout << "Please provide a file name. In case it's in other directory than the executed program provide the file path!\n";
 	std::cout << "FILE: ";
@@ -86,74 +148,75 @@ int main()
 	std::streamsize fileSize = file.tellg(); 
 	file.seekg(0, std::ios::beg);
 
-	std::string fileNameSendMsg = "NAME=" + fileName;
-	int sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", fileNameSendMsg.c_str());
+	char alternatingBit = 0;
+
+	// -------------------------------- HEADER SENDING ---------------------------------
 	// takto v c++ spojuju stringy
 	std::cout << "The file NAME is: " << fileName << "\n";
 	std::cout << "I'm sending the file NAME!\n";
 	std::cout << "*********************************************\n";
-	sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
-	memset(buffer_tx, 0, sizeof(buffer_tx));
-	Sleep(10);
+	int nameStrigLength = fileName.length();
+	packetData nameStruct = { "NAME", fileName.c_str(), nameStrigLength, 0 };
+	sendPacket(nameStruct, myContext, table);
 
 	std::string fileSizeString = std::to_string(fileSize);
-	std::string fileSizeSendMsg = "SIZE=" + fileSizeString + "\n";
-	sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", fileSizeSendMsg.c_str());
-	// takto v c++ spojuju stringy
 	std::cout << "The file SIZE is: " << fileSizeString << "\n";
 	std::cout << "I'm sending the file SIZE!\n";
 	std::cout << "*********************************************\n";
-	sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
-	memset(buffer_tx, 0, sizeof(buffer_tx));
-	Sleep(10);
+	int sizeStringLength = fileSizeString.length();
+	packetData sizeStruct = { "SIZE", fileSizeString.c_str(), sizeStringLength, 0 };
+	sendPacket(sizeStruct, myContext, table);
 
-	std::string startMsg = "START\n";
-	sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", startMsg.c_str());
 	std::cout << "I'm sending the START signal!\n";
 	std::cout << "*********************************************\n";
-	sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
-	memset(buffer_tx, 0, sizeof(buffer_tx));
-	Sleep(10);
+	// nullptr je null pointer coz je kdyz nechci nic odeslat
+	packetData startStruct = { "STRT", nullptr, 0, 0 };
+	sendPacket(startStruct, myContext, table);
+	// ------------------------------------------------------------------------------
 
-	int offset_num = 0;
+	uint32_t offsetNum = 0;
 	int packetNum = 1;
-
+	
 	while (true) {
-		file.read(buffer_tx + 8, BUFFERS_LEN - 8);
+		char data[BUFFERS_LEN - HEADER_LENGTH] = { 0 };
+		file.read(data, BUFFERS_LEN - HEADER_LENGTH);
 		int fileReadLen = file.gcount();
 		if (fileReadLen == 0) {
 			break;
 		}
-		uint32_t offset_bin = offset_num;
-		memcpy(buffer_tx, "DATA", 4);
-		memcpy(buffer_tx + 4, &offset_bin, 4);
-		int sendingPacketLength = fileReadLen + 8;
-		sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
+		// to ze funkce bere const char a ja poslu jenom char je uplne vpohode
+		// rika mi to ze to uz nebude menit v te funkci
+		packetData dataStruct = { "DATA", data, fileReadLen, offsetNum };
+		sendPacket(dataStruct, myContext, table);
 		std::cout << "Sent packet number: " << packetNum << "\n";
-		Sleep(1);
-		offset_num += fileReadLen;
+		offsetNum += fileReadLen;
 		packetNum++;
-		memset(buffer_tx, 0, sizeof(buffer_tx));
 	}
+
 	std::cout << "All packets were succesfully send!\n";
 	std::cout << "*********************************************\n";
-
-	
-	std::string endingMsg = "STOP\n";
-	sendingPacketLength = snprintf(buffer_tx, sizeof(buffer_tx), "%s", endingMsg.c_str());
 	std::cout << "I'm sending the STOP signal!\n";
-	sendto(socketS, buffer_tx, sendingPacketLength, 0, (sockaddr*)&addrDest, sizeof(addrDest));
-	memset(buffer_tx, 0, sizeof(buffer_tx));
-	
+	packetData stopStruct = { "STOP", nullptr, 0, 0 };
+	sendPacket(stopStruct, myContext, table);
 
 	file.close();
 
 	closesocket(socketS);
-
 #endif
 
 
+
+
+
+
+
+
+
+
+
 #ifdef RECEIVER
+	char buffer_tx[BUFFERS_LEN];
+	char buffer_rx[BUFFERS_LEN];
 
 	std::cout << "Waiting for data..\n";
 	std::ofstream outputFile;
@@ -222,4 +285,166 @@ int main()
 	return 0;
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * @brief Sestaví síťový paket v bufferu bez výpočtu kontrolního součtu (CRC).
+ *
+ * Funkce postupně serializuje identifikátor, offset, nulové CRC, alternating bit
+ * a samotná data do předem alokovaného pole.
+ *
+ * @param buffer_tx      Ukazatel na cílový buffer, kam se paket sestaví.
+ * @param sendData       Struktura obsahující data k odeslání (ID, offset, délka, data).
+ * @param alternatingBit Hodnota bitu pro řízení logiky potvrzování (0 nebo 1).
+ */
+void createPacketWithoutCRC(char* buffer_tx, packetData sendData, char alternatingBit) {
+	// nejdriv si buffer hezky vunuluju
+	// musim poslat buffers_len protoze sizeof buffer_tx je tady 8 pac pointer
+	memset(buffer_tx, 0, BUFFERS_LEN);
+	// .c_str() mi zajisti, ze to vezme opravdu jen string, protoze jinak v c++ je
+	// string objekt a takto bych tam kopiroval i milion hodnot toho objektu 
+	// protoze posilam adresu pouzivam -> 
+	memcpy(buffer_tx, sendData.identifier.c_str(), 4);
+	// nactu offset
+	memcpy(buffer_tx + 4, &sendData.offset, 4);
+	// nactu ze zacatku nulove CRC
+	memset(buffer_tx + 8, 0, 4);
+	// nactu alternating bit
+	memcpy(buffer_tx + 12, &alternatingBit, 1);
+	// nactu data:
+	// tohle kontroluju protoze memcpy ve spolupraci s nullptr by mi failnul
+	if (sendData.length > 0) {
+		memcpy(buffer_tx + 13, sendData.data, sendData.length);
+	}
+}
+
+
+/**
+ * @brief Vypočítá CRC32 pro celý paket a zapíše jej na vyhrazenou pozici v bufferu.
+ * * Funkce využívá externí knihovnu/třídu crc32 k výpočtu kontrolního součtu z dat
+ * v bufferu a následně výsledek uloží na 8. až 11. bajt paketu.
+ * * @param buffer_tx    Ukazatel na buffer s již sestaveným paketem (předpokládá offset 8 pro CRC).
+ * @param table        Reference na vyhledávací tabulku (lookup table) pro algoritmus CRC32 o 256 prvcích.
+ * @param packetLength Celková délka paketu v bajtech, ze kterých se má CRC počítat.
+ */
+// ten table mam takto protoze funkce crc32::update striktně ocekava
+// "odkaz na pole o 256 prvcích"
+void addCRCToPacket(char *buffer_tx, uint32_t(&table)[256], int packetLength) {
+	uint32_t crc = crc32::update(table, 0, buffer_tx, packetLength);
+	memcpy(buffer_tx + 8, &crc, 4);
+}
+
+
+/**
+ * @brief Zajišťuje spolehlivé odeslání paketu pomocí mechanismu Stop-and-Wait.
+ *
+ * Funkce sestaví paket, vypočítá CRC a v cyklu jej odesílá na cílovou adresu, dokud
+ * neobdrží validní potvrzení (ACK). Implementuje timeout a kontrolu integrity
+ * přijatého potvrzení. Po úspěšném doručení změní hodnotu alternating bitu.
+ *
+ * @param sendData  Struktura s daty, která mají být odeslána.
+ * @param info      Odkaz na strukturu s informacemi o odesílateli (socket, adresa, stavový bit).
+ * @param table     Reference na vyhledávací tabulku pro výpočet CRC32.
+ */
+// info musim poslat jako odkaz pac upravuju alternating bit
+void sendPacket(packetData sendData, senderInfo& info, uint32_t(&table)[256]) {
+	// vytvorim si tady svoje vlastni buffery
+	char buffer_tx[BUFFERS_LEN];
+	char buffer_rx[BUFFERS_LEN];
+	int packetLength = sendData.length + HEADER_LENGTH;
+	// i tu socket adresu je lepsi vytvorit vlastni uvnitr funkce
+	struct sockaddr_in from;
+	int fromlen = sizeof(from);
+
+	createPacketWithoutCRC(buffer_tx, sendData, info.alternatingBit);
+	addCRCToPacket(buffer_tx, table, packetLength);
+
+	// udelam loop ktery bude posilat tak dlouho, dokud nedostane spravnou message
+	bool correctMessageReceived = false;
+	while (!correctMessageReceived) {
+		sendto(info.socketS, buffer_tx, packetLength, 0, (sockaddr*)&info.addrDest, sizeof(info.addrDest));
+		Sleep(1);
+		int recVal = recvfrom(info.socketS, buffer_rx, BUFFERS_LEN, 0, (sockaddr*)&from, &fromlen);
+		if (recVal == -1) {
+			std::cout << "ERROR_TIMEOUT: Haven't received a response in time!\n";
+			std::cout << "Resending the packet!\n";
+		
+			continue;
+		}
+		if (!checkReceivedAcknowledge(buffer_rx, info.alternatingBit, table, recVal)) {
+			std::cout << "ERROR_ACK: Received acknowlegement does NOT correspond with the expected!\n";
+			std::cout << "Resending the packet!\n";
+			continue;
+		}
+		correctMessageReceived = true;
+	}
+	// pozmenim si ten svuj bit na novy
+	info.alternatingBit = (info.alternatingBit == 0) ? 1 : 0;
+}
+
+
+/**
+ * @brief Prověřuje, zda přijatý paket je validním potvrzením (ACK).
+ *
+ * Kontroluje tři aspekty: zda zpráva začíná identifikátorem "ACK ", zda se shoduje
+ * přijatý alternating bit s očekávaným a zda souhlasí kontrolní součet CRC.
+ *
+ * @param buffer_rx      Ukazatel na buffer s přijatými daty.
+ * @param alternatingBit Očekávaná hodnota stavového bitu.
+ * @param table          Reference na vyhledávací tabulku pro výpočet CRC32.
+ * @param packetLength   Délka přijatého paketu.
+ * @return true          Pokud je potvrzení v pořádku a odpovídá očekávání.
+ * @return false         V případě chyby v datech, bitu nebo kontrolním součtu.
+ */
+bool checkReceivedAcknowledge(char* buffer_rx, char alternatingBit,
+							  uint32_t(&table)[256], int packetLength) {
+	// zkontroluju ze sedi message zpetne poslana ACK
+	if (memcmp(buffer_rx, "ACK ", 4) != 0) {
+		return false;
+	// taky ze sedi alternating bit
+	} else if (buffer_rx[12] != alternatingBit) {
+		return false;
+	// a taky ze sedi CRC
+	} else if (!checkBufferForCRC(buffer_rx, table, packetLength)) {
+		return false;
+	} else {
+		return true;
+	}
+}
+
+
+/**
+ * @brief Verifikuje integritu dat v bufferu pomocí CRC32.
+ *
+ * Funkce dočasně vyjme přijaté CRC z bufferu, místo něj vloží nuly a vypočítá
+ * nový kontrolní součet z obsahu bufferu. Ten následně porovná s původním
+ * přijatým CRC.
+ *
+ * @param buffer_rx    Ukazatel na buffer s daty k prověření.
+ * @param table        Reference na vyhledávací tabulku pro výpočet CRC32.
+ * @param packetLength Celková délka paketu v bufferu.
+ * @return true        Pokud vypočítaný CRC souhlasí s přijatým.
+ * @return false       Pokud došlo k poškození dat při přenosu.
+ */
+bool checkBufferForCRC(char* buffer_rx, uint32_t(&table)[256], int packetLength) {
+	char CRC[4];
+	memcpy(CRC, buffer_rx + 8, 4);
+	memset(buffer_rx + 8, 0, 4);
+	uint32_t generatedCRC = crc32::update(table, 0, buffer_rx, packetLength);
+	uint32_t receivedCRC;
+	memcpy(&receivedCRC, CRC, sizeof(uint32_t));
+	return receivedCRC == generatedCRC;
+} 
 
