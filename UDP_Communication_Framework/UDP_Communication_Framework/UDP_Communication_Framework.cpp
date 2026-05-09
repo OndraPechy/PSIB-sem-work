@@ -54,9 +54,6 @@ bool checkReceivedAcknowledge(char* buffer_rx, char alternatingBit,
 bool checkBufferForCRC(char* buffer_rx, uint32_t(&table)[256], int packetLength);
 
 
-
-
-
 void InitWinsock()
 {
 	WSADATA wsaData;
@@ -177,11 +174,9 @@ int main()
 	sendPacket(startStruct, myContext, table);
 	// ------------------------------------------------------------------------------
 
-
 	uint32_t offsetNum = 0;
 	int packetNum = 1;
 	
-
 	while (true) {
 		char data[BUFFERS_LEN - HEADER_LENGTH] = { 0 };
 		file.read(data, BUFFERS_LEN - HEADER_LENGTH);
@@ -197,7 +192,6 @@ int main()
 		offsetNum += fileReadLen;
 		packetNum++;
 	}
-
 
 	std::cout << "All packets were succesfully send!\n";
 	std::cout << "*********************************************\n";
@@ -448,9 +442,9 @@ bool checkBufferForCRC(char* buffer_rx, uint32_t(&table)[256], int packetLength)
 	char CRC[4];
 	memcpy(CRC, buffer_rx + 8, 4);
 	memset(buffer_rx + 8, 0, 4);
-	uint32_t crc = crc32::update(table, 0, buffer_rx, packetLength);
+	uint32_t generatedCRC = crc32::update(table, 0, buffer_rx, packetLength);
 	uint32_t receivedCRC;
 	memcpy(&receivedCRC, CRC, sizeof(uint32_t));
-	return receivedCRC == crc;
-}
+	return receivedCRC == generatedCRC;
+} 
 
