@@ -15,7 +15,10 @@
 // IMPORTED LIBRABRIES:
 // ten kod v tomto je takzvany header only, takze chilluju
 #include "crc.h"
-#define TARGET_IP "10.1.3.239"
+#include "sha256.h"
+
+#include <stdexcept>
+#define TARGET_IP "127.0.0.1"
 
 #define BUFFERS_LEN 1024
 #define HEADER_LENGTH 13
@@ -32,7 +35,7 @@
 #ifdef RECEIVER
 #define TARGET_PORT 5222
 #define LOCAL_PORT 5111
-#endif RECEIVER
+#endif // RECEIVER
 
 struct packetData {
 	std::string identifier;
@@ -46,6 +49,7 @@ struct senderInfo {
 	sockaddr_in addrDest;
 	char alternatingBit;
 };
+
 void createPacketWithoutCRC(char* buffer_tx, packetData sendData, char alternatingBit);
 void addCRCToPacket(char* buffer_tx, uint32_t(&table)[256], int packetLength);
 void sendPacket(packetData sendData, senderInfo& info, uint32_t(&table)[256]);
@@ -53,6 +57,8 @@ bool checkReceivedAcknowledge(char* buffer_rx, char alternatingBit,
 							  uint32_t(&table)[256], int packetLength);
 bool checkBufferForCRC(char* buffer_rx, uint32_t(&table)[256], int packetLength);
 
+void sendControlPacket(SOCKET socketS, sockaddr_in& addrDest, uint32_t(&table)[256], const char* id, char alternatingBit);
+std::string calculateSHA256(const std::string& filePath);
 
 void InitWinsock()
 {
@@ -193,8 +199,35 @@ int main()
 		packetNum++;
 	}
 
-	std::cout << "All packets were succesfully send!\n";
+	// V tuto chvíli už sender odeslal všechny DATA pakety.
+// Teď ještě spočítáme SHA-256 hash původního souboru,
+// abychom mohli na receiveru ověřit, že se celý soubor přenesl správně.
+	std::cout << "All data packets were successfully sent!\n";
 	std::cout << "*********************************************\n";
+
+	// Spočítáme SHA-256 hash původního souboru.
+	// Funkce calculateSHA256() přečte celý soubor a vrátí hash jako textový řetězec.
+	std::string fileHash = calculateSHA256(filePath);
+
+	std::cout << "SHA-256 of original file: " << fileHash << "\n";
+	std::cout << "I'm sending the HASH!\n";
+	std::cout << "*********************************************\n";
+
+	// Vytvoříme speciální paket typu "HASH".
+	// Do datové části paketu vložíme vypočítaný SHA-256 hash.
+	// Receiver si tento hash uloží a po přijetí celého souboru ho porovná
+	// s hashem, který si sám spočítá z přijatého souboru.
+	packetData hashStruct = {
+		"HASH",                                  // identifikátor paketu
+		fileHash.c_str(),                       // data paketu = SHA-256 hash
+		static_cast<int>(fileHash.length()),    // délka hashe v bajtech
+		0                                       // offset zde nepotřebujeme
+	};
+
+	// HASH paket posíláme stejně jako ostatní pakety,
+	// tedy také přes Stop-and-Wait, s CRC a čekáním na ACK.
+	sendPacket(hashStruct, myContext, table);
+
 	std::cout << "I'm sending the STOP signal!\n";
 	packetData stopStruct = { "STOP", nullptr, 0, 0 };
 	sendPacket(stopStruct, myContext, table);
@@ -215,72 +248,369 @@ int main()
 
 
 #ifdef RECEIVER
-	char buffer_tx[BUFFERS_LEN];
+
+	// Buffer pro příjem UDP paketů.
+	// Do tohoto pole se bude ukládat každý přijatý paket.
 	char buffer_rx[BUFFERS_LEN];
 
-	std::cout << "Waiting for data..\n";
+	std::cout << "Waiting for data...\n";
+
+	// Výstupní soubor, do kterého bude receiver zapisovat přijatá data.
 	std::ofstream outputFile;
+
+	// Pomocná proměnná pro hlavní přijímací smyčku.
+	// Dokud je true, receiver stále čeká na další pakety.
 	bool isReceiving = true;
-	char filename[256] = "received.bin";
 
-	int receivedPackets = 0; 
+	// Název původního souboru, který pošle sender v paketu NAME.
+	std::string originalFileName;
 
-	// Loop for receiving
+	// Název souboru, který receiver vytvoří u sebe.
+	// Výchozí hodnota je received.bin, kdyby název od senderu z nějakého důvodu nepřišel.
+	std::string outputFileName = "received.bin";
+
+	// Sem se uloží SHA-256 hash, který pošle sender v paketu HASH.
+	// Na konci přenosu se porovná s hashem přijatého souboru.
+	std::string expectedHash;
+
+	// Očekávaná velikost souboru.
+	// Výchozí hodnota -1 znamená, že velikost zatím neznáme.
+	long long expectedFileSize = -1;
+
+	// Počítadlo přijatých DATA paketů.
+	int receivedPackets = 0;
+
+	// Stop-and-Wait používá alternating bit, tedy střídání 0/1.
+	// Receiver tím pozná, jestli přišel nový paket, nebo duplikát starého paketu.
+	char expectedBit = 0;
+
+	// Struktura, do které recvfrom() uloží adresu odesílatele.
+	// Díky tomu receiver ví, kam má posílat ACK nebo NAK.
+	struct sockaddr_in from;
+
+	// Velikost struktury s adresou odesílatele.
+	int fromlen = sizeof(from);
+
+	// Hlavní smyčka receiveru.
+	// Receiver v ní postupně přijímá pakety, kontroluje CRC,
+	// zapisuje data do souboru a posílá ACK/NAK.
 	while (isReceiving) {
 
+		// Před každým příjmem buffer vynulujeme,
+		// aby v něm nezůstala stará data z předchozího paketu.
 		memset(buffer_rx, 0, sizeof(buffer_rx));
 
-		int receivedLength = recvfrom(socketS, buffer_rx, sizeof(buffer_rx), 0, (sockaddr*)&from, &fromlen);
+		// recvfrom() může změnit hodnotu fromlen,
+		// proto ji před každým příjmem nastavíme znovu.
+		fromlen = sizeof(from);
+
+		// Čekáme na příjem UDP paketu.
+		// Přijatá data se uloží do buffer_rx.
+		// Adresa odesílatele se uloží do proměnné from.
+		int receivedLength = recvfrom(
+			socketS,
+			buffer_rx,
+			sizeof(buffer_rx),
+			0,
+			(sockaddr*)&from,
+			&fromlen
+		);
+
+		// Pokud recvfrom() vrátí SOCKET_ERROR, nastala chyba nebo timeout.
 		if (receivedLength == SOCKET_ERROR) {
-			std::cout << "Socket error!\n";
+			int error = WSAGetLastError();
+
+			// Timeout znamená, že receiver zatím nic nepřijal.
+			// Není to fatální chyba, takže jen pokračujeme v čekání.
+			if (error == WSAETIMEDOUT) {
+				std::cout << "Receiver timeout: still waiting for data...\n";
+				continue;
+			}
+
+			// Jiná socket chyba už je závažnější,
+			// proto ji vypíšeme a ukončíme přijímací smyčku.
+			std::cout << "Socket error: " << error << "\n";
 			break;
 		}
-		if (strncmp(buffer_rx, "NAME=", 5) == 0) {
-			int nameLength = receivedLength - 5;
-			if (nameLength > 0 && nameLength < 256) {
-				memcpy(filename, buffer_rx + 5, nameLength);
-				filename[nameLength] = '\0';
-				std::cout << "We have received a file with a name: " << filename << "\n";
+
+		// Každý náš paket musí mít minimálně hlavičku dlouhou HEADER_LENGTH bajtů.
+		// Pokud přišel kratší paket, nemá správný formát a ignorujeme ho.
+		if (receivedLength < HEADER_LENGTH) {
+			std::cout << "Received packet is too short, ignoring it.\n";
+			continue;
+		}
+
+
+		// Sequence number / alternating bit je uložený na indexu 12.
+		// Slouží k rozpoznání, jestli přišel nový paket, nebo duplikát.
+		char packetBit = buffer_rx[12];
+
+		// První 4 bajty paketu jsou identifikátor typu paketu.
+		// Například "NAME", "SIZE", "STRT", "DATA", "HASH", "STOP".
+		char packetId[5] = { 0 };
+		memcpy(packetId, buffer_rx, 4);
+
+		// Pomocný výpis, abychom v konzoli viděli,
+		// jaký paket přišel, s jakým sequence bitem a jakou má délku.
+		std::cout << "Packet received: "
+			<< packetId
+			<< ", seq = "
+			<< (int)buffer_rx[12]
+			<< ", length = "
+			<< receivedLength
+			<< " bytes\n";
+
+		// Kontrola CRC celého přijatého paketu.
+		// Pokud CRC nesedí, znamená to, že se paket při přenosu poškodil.
+		bool crcOk = checkBufferForCRC(buffer_rx, table, receivedLength);
+
+		if (!crcOk) {
+			std::cout << "CRC ERROR in packet " << packetId
+				<< ", seq = " << (int)packetBit
+				<< " -> sending NAK\n";
+
+			// Při chybě CRC pošleme NAK.
+			// Sender pak stejný paket odešle znovu.
+			sendControlPacket(socketS, from, table, "NAK ", packetBit);
+			continue;
+		}
+
+		// Pokud přišel paket s jiným bitem, než receiver aktuálně očekává,
+		// znamená to nejspíš duplikát už přijatého paketu.
+		// Typická situace: receiver už ACK poslal, ale ACK se cestou ztratil.
+		// Sender tedy poslal stejný paket znovu.
+		if (packetBit != expectedBit) {
+			std::cout << "Duplicate packet " << packetId
+				<< ", seq = " << (int)packetBit
+				<< " -> sending ACK again\n";
+
+			// Duplikát znovu nezapisujeme do souboru.
+			// Jen znovu pošleme ACK, aby sender mohl pokračovat.
+			sendControlPacket(socketS, from, table, "ACK ", packetBit);
+			continue;
+		}
+
+		// Délka datové části paketu.
+		// Od celkové délky odečteme délku hlavičky.
+		int payloadLength = receivedLength - HEADER_LENGTH;
+
+		// Ukazatel na začátek datové části.
+		// Data začínají až za 13bajtovou hlavičkou.
+		char* payload = buffer_rx + HEADER_LENGTH;
+
+		// Pomocná proměnná určující, jestli se paket podařilo správně zpracovat.
+		// Pokud ano, pošleme ACK. Pokud ne, pošleme NAK.
+		bool packetProcessedCorrectly = true;
+
+		// Paket NAME obsahuje název původního souboru.
+		if (memcmp(buffer_rx, "NAME", 4) == 0) {
+			originalFileName.assign(payload, payloadLength);
+
+			// Pokud by název nepřišel nebo byl prázdný,
+			// uložíme soubor pod výchozím názvem received.bin.
+			if (originalFileName.empty()) {
+				outputFileName = "received.bin";
+			}
+			else {
+				// Přijatý soubor ukládáme s prefixem "received_",
+				// abychom si nepřepsali původní soubor při testování na jednom PC.
+				outputFileName = "received_" + originalFileName;
+			}
+
+			std::cout << "File name received: " << originalFileName << "\n";
+			std::cout << "Output file will be: " << outputFileName << "\n";
+		}
+
+		// Paket SIZE obsahuje velikost původního souboru jako text.
+		else if (memcmp(buffer_rx, "SIZE", 4) == 0) {
+			std::string sizeString(payload, payloadLength);
+
+			try {
+				// Textovou velikost převedeme na číslo.
+				expectedFileSize = std::stoll(sizeString);
+
+				std::cout << "File size received: "
+					<< expectedFileSize
+					<< " bytes\n";
+			}
+			catch (...) {
+				// Pokud převod selže, paket nepovažujeme za správně zpracovaný.
+				std::cout << "Could not parse file size.\n";
+				packetProcessedCorrectly = false;
 			}
 		}
-		else if (strncmp(buffer_rx, "SIZE=", 5) == 0) {
-			std::cout << "File size info received: " << (buffer_rx + 5) << "\n";
-		}
-		else if (strncmp(buffer_rx, "START", 5) == 0) {
-			std::cout << "We have received START and opening the file!\n";
-			outputFile.open(filename, std::ios::binary);
+
+		// Paket STRT značí začátek přenosu dat.
+		// Receiver si v tu chvíli otevře výstupní soubor.
+		else if (memcmp(buffer_rx, "STRT", 4) == 0) {
+			std::cout << "START received, opening output file...\n";
+
+			outputFile.open(outputFileName, std::ios::binary);
+
 			if (!outputFile.is_open()) {
-				std::cout << "We could not create the file!\n";
+				std::cout << "Could not create output file!\n";
+				packetProcessedCorrectly = false;
 			}
-			receivedPackets = 0; 
+			else {
+				// Po úspěšném otevření souboru vynulujeme počítadlo DATA paketů.
+				receivedPackets = 0;
+				std::cout << "Output file opened successfully.\n";
+			}
 		}
-		else if (strncmp(buffer_rx, "DATA", 4) == 0) {
-			if (receivedLength >= 8) {
-				uint32_t offset = *(uint32_t*)(buffer_rx + 4);
-				int dataLength = receivedLength - 8;
-				if (outputFile.is_open()) {
-					outputFile.seekp(offset);
-					outputFile.write(buffer_rx + 8, dataLength);
 
-					receivedPackets++; 
+		// Paket DATA obsahuje část souboru.
+		else if (memcmp(buffer_rx, "DATA", 4) == 0) {
+			uint32_t offset = 0;
 
-					std::cout << "Received packet number: " << receivedPackets << std::endl;
+			// Offset je uložený v hlavičce na bajtech 4-7.
+			// Říká, na jakou pozici v souboru máme tento blok dat zapsat.
+			memcpy(&offset, buffer_rx + 4, sizeof(uint32_t));
 
+			if (!outputFile.is_open()) {
+				std::cout << "Output file is not open, DATA packet ignored.\n";
+				packetProcessedCorrectly = false;
+			}
+			else {
+				// Posuneme zapisovací pozici v souboru podle offsetu.
+				outputFile.seekp(offset, std::ios::beg);
+
+				// Zapíšeme datovou část paketu do souboru.
+				outputFile.write(payload, payloadLength);
+
+				if (!outputFile.good()) {
+					std::cout << "Error while writing DATA packet to file.\n";
+					packetProcessedCorrectly = false;
+				}
+				else {
+					receivedPackets++;
+
+					std::cout << "Received DATA packet number: "
+						<< receivedPackets
+						<< ", offset: "
+						<< offset
+						<< ", data length: "
+						<< payloadLength
+						<< "\n";
 				}
 			}
 		}
-		else if (strncmp(buffer_rx, "STOP", 4) == 0) {
-			std::cout << "We have received STOP, that means exiting our connection!\n";
+
+		// Paket HASH obsahuje SHA-256 hash původního souboru.
+		// Sender ho posílá po všech DATA paketech a před STOP.
+		else if (memcmp(buffer_rx, "HASH", 4) == 0) {
+			expectedHash.assign(payload, payloadLength);
+
+			std::cout << "Expected SHA-256 received: "
+				<< expectedHash
+				<< "\n";
+		}
+
+		// Paket STOP znamená konec přenosu.
+		// Receiver zavře soubor a provede finální kontrolu integrity.
+		else if (memcmp(buffer_rx, "STOP", 4) == 0) {
+			std::cout << "STOP received, closing output file...\n";
 
 			if (outputFile.is_open()) {
 				outputFile.close();
 			}
+
+			// Pokud jsme dostali HASH paket, spočítáme SHA-256 přijatého souboru.
+			if (!expectedHash.empty()) {
+				try {
+					std::string receivedHash = calculateSHA256(outputFileName);
+
+					std::cout << "SHA-256 of received file: "
+						<< receivedHash
+						<< "\n";
+
+					// Porovnání hashe od senderu a hashe nově vytvořeného souboru.
+					// Pokud jsou stejné, celý soubor se přenesl správně.
+					if (receivedHash == expectedHash) {
+						std::cout << "FILE HASH OK: received file is correct.\n";
+					}
+					else {
+						std::cout << "FILE HASH ERROR: received file is corrupted!\n";
+						std::cout << "Expected: " << expectedHash << "\n";
+						std::cout << "Received: " << receivedHash << "\n";
+					}
+				}
+				catch (const std::exception& e) {
+					std::cout << "Could not calculate SHA-256: "
+						<< e.what()
+						<< "\n";
+				}
+			}
+			else {
+				// Pokud HASH paket nepřišel, nelze ověřit integritu celého souboru.
+				std::cout << "WARNING: HASH packet was not received.\n";
+			}
+
+			// Vedle SHA-256 ještě kontrolujeme i velikost přijatého souboru.
+			// Hlavní kontrola integrity je ale SHA-256.
+			if (expectedFileSize >= 0) {
+				try {
+					long long receivedFileSize = std::filesystem::file_size(outputFileName);
+
+					std::cout << "Expected file size: "
+						<< expectedFileSize
+						<< " bytes\n";
+
+					std::cout << "Received file size: "
+						<< receivedFileSize
+						<< " bytes\n";
+
+					if (receivedFileSize == expectedFileSize) {
+						std::cout << "FILE SIZE OK.\n";
+					}
+					else {
+						std::cout << "FILE SIZE ERROR.\n";
+					}
+				}
+				catch (...) {
+					std::cout << "Could not check received file size.\n";
+				}
+			}
+
+			// Přenos skončil, ukončíme hlavní přijímací smyčku.
 			isReceiving = false;
 		}
+
+		// Pokud přišel neznámý typ paketu, považujeme ho za chybný.
+		else {
+			std::cout << "Unknown packet type: " << packetId << "\n";
+			packetProcessedCorrectly = false;
+		}
+
+		// Pokud byl paket správně zpracován, pošleme ACK.
+		// Teprve potom změníme očekávaný alternating bit.
+		if (packetProcessedCorrectly) {
+			std::cout << "CRC OK / packet processed -> sending ACK, seq = "
+				<< (int)packetBit
+				<< "\n";
+
+			sendControlPacket(socketS, from, table, "ACK ", packetBit);
+
+			// Po správném paketu očekáváme příště opačný bit.
+			expectedBit = (expectedBit == 0) ? 1 : 0;
+		}
+		else {
+			// Pokud paket nešel správně zpracovat,
+			// pošleme NAK a sender ho pošle znovu.
+			std::cout << "Packet was not processed correctly -> sending NAK, seq = "
+				<< (int)packetBit
+				<< "\n";
+
+			sendControlPacket(socketS, from, table, "NAK ", packetBit);
+		}
 	}
-	std::cout << "Transfer was a success!\n";
+
+	std::cout << "Receiving finished.\n";
+
+	// Zavření socketu po skončení příjmu.
+	closesocket(socketS);
 
 #endif
+
 	getchar();
 	return 0;
 }
@@ -388,6 +718,12 @@ void sendPacket(packetData sendData, senderInfo& info, uint32_t(&table)[256]) {
 			std::cout << "Resending the packet!\n";
 			continue;
 		}
+		std::cout << "ACK received for packet "
+			<< sendData.identifier
+			<< ", seq = "
+			<< (int)info.alternatingBit
+			<< "\n";
+
 		correctMessageReceived = true;
 	}
 	// pozmenim si ten svuj bit na novy
@@ -410,6 +746,9 @@ void sendPacket(packetData sendData, senderInfo& info, uint32_t(&table)[256]) {
  */
 bool checkReceivedAcknowledge(char* buffer_rx, char alternatingBit,
 							  uint32_t(&table)[256], int packetLength) {
+	if (packetLength < HEADER_LENGTH) {
+		return false;
+	}
 	// zkontroluju ze sedi message zpetne poslana ACK
 	if (memcmp(buffer_rx, "ACK ", 4) != 0) {
 		return false;
@@ -447,4 +786,85 @@ bool checkBufferForCRC(char* buffer_rx, uint32_t(&table)[256], int packetLength)
 	memcpy(&receivedCRC, CRC, sizeof(uint32_t));
 	return receivedCRC == generatedCRC;
 } 
+
+/**
+ * @brief Odešle řídicí paket typu ACK nebo NAK zpět odesílateli.
+ *
+ * Funkce vytvoří krátký řídicí paket bez datové části. Používá stejný formát
+ * paketu jako ostatní zprávy v protokolu: identifikátor, offset, CRC,
+ * alternating bit a případná data. U ACK/NAK paketů ale datová část není potřeba.
+ *
+ * Funkce nejprve sestaví paket bez CRC pomocí createPacketWithoutCRC(),
+ * potom do něj doplní CRC pomocí addCRCToPacket() a nakonec jej odešle přes UDP
+ * pomocí sendto().
+ *
+ * @param socketS Socket, přes který se bude řídicí paket odesílat.
+ * @param addrDest Adresa příjemce, tedy většinou adresa původního odesílatele datového paketu.
+ * @param table CRC32 lookup tabulka použitá pro výpočet kontrolního součtu.
+ * @param id Identifikátor řídicího paketu, typicky "ACK " nebo "NAK ".
+ * @param alternatingBit Sequence number / alternating bit potvrzovaného paketu.
+ */
+void sendControlPacket(SOCKET socketS, sockaddr_in& addrDest, uint32_t(&table)[256], const char* id, char alternatingBit)
+{
+	char buffer_tx[BUFFERS_LEN];
+
+	packetData controlPacket;
+	controlPacket.identifier = std::string(id, 4);
+	controlPacket.data = nullptr;
+	controlPacket.length = 0;
+	controlPacket.offset = 0;
+
+	createPacketWithoutCRC(buffer_tx, controlPacket, alternatingBit);
+	addCRCToPacket(buffer_tx, table, HEADER_LENGTH);
+
+	sendto(
+		socketS,
+		buffer_tx,
+		HEADER_LENGTH,
+		0,
+		(sockaddr*)&addrDest,
+		sizeof(addrDest)
+	);
+}
+ 
+/**
+ * @brief Spočítá SHA-256 hash zadaného souboru.
+ *
+ * Funkce otevře soubor v binárním režimu a postupně ho čte po blocích.
+ * Každý načtený blok předá objektu SHA256 z použité hashovací knihovny.
+ * Po přečtení celého souboru vrátí výsledný SHA-256 hash jako textový řetězec.
+ *
+ * Tato funkce slouží ke kontrole integrity celého souboru. Sender pomocí ní
+ * spočítá hash původního souboru a odešle ho v paketu "HASH". Receiver potom
+ * stejnou funkcí spočítá hash přijatého souboru a oba hashe porovná.
+ *
+ * @param filePath Cesta k souboru, ze kterého se má SHA-256 hash vypočítat.
+ * @return SHA-256 hash souboru jako textový řetězec.
+ *
+ * @throws std::runtime_error Pokud se soubor nepodaří otevřít.
+ */
+std::string calculateSHA256(const std::string& filePath)
+{
+	std::ifstream file(filePath, std::ios::binary);
+
+	if (!file.is_open()) {
+		throw std::runtime_error("Could not open file for SHA-256 calculation.");
+	}
+
+	SHA256 sha256;
+
+	const size_t bufferSize = 4096;
+	char buffer[bufferSize];
+
+	while (file.good()) {
+		file.read(buffer, bufferSize);
+		std::streamsize bytesRead = file.gcount();
+
+		if (bytesRead > 0) {
+			sha256.add(buffer, static_cast<size_t>(bytesRead));
+		}
+	}
+
+	return sha256.getHash();
+}
 
