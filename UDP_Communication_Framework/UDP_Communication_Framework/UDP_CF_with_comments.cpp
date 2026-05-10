@@ -14,6 +14,7 @@
 
 // IMPORTED LIBRABRIES:
 // ten kod v tomto je takzvany header only, takze chilluju
+//x
 #include "crc.h"
 #include "sha256.h"
 
@@ -22,19 +23,19 @@
 
 #define BUFFERS_LEN 1024
 #define HEADER_LENGTH 13
-#define WAIT_TIMER 10000
+#define WAIT_TIMER 500
 
-#define SENDER
-// #define RECEIVER
+//#define SENDER
+#define RECEIVER
 
 #ifdef SENDER
-#define TARGET_PORT 5111
-#define LOCAL_PORT 5222
+#define TARGET_PORT 14000
+#define LOCAL_PORT 15001
 #endif // SENDER
 
 #ifdef RECEIVER
-#define TARGET_PORT 5222
-#define LOCAL_PORT 5111
+#define LOCAL_PORT 15000
+#define TARGET_PORT 14001
 #endif // RECEIVER
 
 struct packetData {
@@ -88,7 +89,7 @@ int main()
 		getchar();
 		return 1;
 	}
-	DWORD timeoutMs = 10000;
+	DWORD timeoutMs = WAIT_TIMER;
 	// SOL_SOCKET rika ze menime nastaveni na systemove urovni socketu
 	// SO_RCVTIMEO rika ze zapiname schopnost received timeout, 
 	setsockopt(socketS, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeoutMs, sizeof(timeoutMs));
@@ -249,6 +250,11 @@ int main()
 
 
 #ifdef RECEIVER
+	// musi mit taky vytvorenou svoji vlastni pevnou adresu:
+	sockaddr_in addrDest;
+	addrDest.sin_family = AF_INET;
+	addrDest.sin_port = htons(TARGET_PORT);
+	InetPton(AF_INET, _T(TARGET_IP), &addrDest.sin_addr.s_addr);
 
 	// Buffer pro příjem UDP paketů.
 	// Do tohoto pole se bude ukládat každý přijatý paket.
@@ -324,7 +330,6 @@ int main()
 			// Timeout znamená, že receiver zatím nic nepřijal.
 			// Není to fatální chyba, takže jen pokračujeme v čekání.
 			if (error == WSAETIMEDOUT) {
-				std::cout << "Receiver timeout: still waiting for data...\n";
 				continue;
 			}
 
@@ -372,7 +377,7 @@ int main()
 
 			// Při chybě CRC pošleme NAK.
 			// Sender pak stejný paket odešle znovu.
-			sendControlPacket(socketS, from, table, "NAK ", packetBit);
+			sendControlPacket(socketS, addrDest, table, "NAK ", packetBit);
 			continue;
 		}
 
@@ -387,7 +392,7 @@ int main()
 
 			// Duplikát znovu nezapisujeme do souboru.
 			// Jen znovu pošleme ACK, aby sender mohl pokračovat.
-			sendControlPacket(socketS, from, table, "ACK ", packetBit);
+			sendControlPacket(socketS, addrDest, table, "ACK ", packetBit);
 			continue;
 		}
 
@@ -573,6 +578,7 @@ int main()
 			}
 
 			// Přenos skončil, ukončíme hlavní přijímací smyčku.
+			sendControlPacket(socketS, addrDest, table, "ACK ", packetBit);
 			isReceiving = false;
 		}
 
@@ -589,7 +595,7 @@ int main()
 				<< (int)packetBit
 				<< "\n";
 
-			sendControlPacket(socketS, from, table, "ACK ", packetBit);
+			sendControlPacket(socketS, addrDest, table, "ACK ", packetBit);
 
 			// Po správném paketu očekáváme příště opačný bit.
 			expectedBit = (expectedBit == 0) ? 1 : 0;
@@ -601,7 +607,7 @@ int main()
 				<< (int)packetBit
 				<< "\n";
 
-			sendControlPacket(socketS, from, table, "NAK ", packetBit);
+			sendControlPacket(socketS, addrDest, table, "NAK ", packetBit);
 		}
 	}
 
@@ -690,6 +696,8 @@ void addCRCToPacket(char* buffer_tx, uint32_t(&table)[256], int packetLength) {
  * @param table     Reference na vyhledávací tabulku pro výpočet CRC32.
  */
  // info musim poslat jako odkaz pac upravuju alternating bit
+
+// POZOR V MAIN KODU JE V TETO FUNKCI DULEZITA ZMENA A JE PRIDANA JEDNA FUNKCE
 void sendPacket(packetData sendData, senderInfo& info, uint32_t(&table)[256]) {
 	// vytvorim si tady svoje vlastni buffery
 	char buffer_tx[BUFFERS_LEN];
