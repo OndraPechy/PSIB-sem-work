@@ -14,6 +14,7 @@
 
 // IMPORTED LIBRABRIES:
 // ten kod v tomto je takzvany header only, takze chilluju
+//x
 #include "crc.h"
 #include "sha256.h"
 
