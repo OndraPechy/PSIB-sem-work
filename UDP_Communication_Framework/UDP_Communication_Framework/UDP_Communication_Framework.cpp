@@ -12,13 +12,13 @@
 #include "sha256.h"
 #include <stdexcept>
 
-#define TARGET_IP "127.0.0.1"
+#define TARGET_IP "147.32.215.140"
 #define BUFFERS_LEN 1024
 #define HEADER_LENGTH 13
 #define WAIT_TIMER 500
 
-#define SENDER
-//#define RECEIVER
+//#define SENDER
+#define RECEIVER
 
 #ifdef SENDER
 #define TARGET_PORT 14000
@@ -117,7 +117,6 @@ int main()
 
 	char alternatingBit = 0;
 
-	// HEADER SENDING
 	std::cout << "The file NAME is: " << fileName << "\n";
 	std::cout << "Sending the file NAME!\n";
 	int nameStrigLength = fileName.length();
@@ -137,9 +136,7 @@ int main()
 	packetData startStruct = { "STRT", nullptr, 0, 0 };
 	sendPacket(startStruct, myContext, table);
 	std::cout << "*********************************************\n";
-	// --------------
 
-	// DATA SENDING
 	uint32_t offsetNum = 0;
 	int packetNum = 1;
 	while (true) {
@@ -157,9 +154,8 @@ int main()
 		packetNum++;
 		std::cout << "------------------------------\n";
 	}
-	// ------------
 
-	// HASH SENDING
+
 	std::cout << "ALL DATA PACKETS WERE SUCCESSFULLY SENT!\n";
 	std::cout << "*********************************************\n";
 	std::string fileHash = calculateSHA256(filePath);
@@ -168,14 +164,13 @@ int main()
 	packetData hashStruct = {"HASH", fileHash.c_str(), static_cast<int>(fileHash.length()), 0};
 	sendPacket(hashStruct, myContext, table);
 	std::cout << "*********************************************\n";
-	// ------------
 
-	// STOP SENDING
+
 	std::cout << "I'm sending the STOP signal!\n";
 	packetData stopStruct = { "STOP", nullptr, 0, 0 };
 	sendPacket(stopStruct, myContext, table);
 	std::cout << "*********************************************\n";
-	// ------------
+
 
 	std::cout << "FILE WAS SUCCESSFULLY SENT :)!\n";
 
@@ -251,7 +246,6 @@ int main()
 		char* payload = buffer_rx + HEADER_LENGTH;
 		bool packetProcessedCorrectly = true;
 
-		// NAME RECEIVING
 		if (memcmp(buffer_rx, "NAME", 4) == 0) {
 			originalFileName.assign(payload, payloadLength);
 			if (originalFileName.empty()) {
@@ -263,9 +257,7 @@ int main()
 				outputFileName = originalFileName;
 			}
 		}
-		// -------------
 
-		// SIZE RECEIVING
 		else if (memcmp(buffer_rx, "SIZE", 4) == 0) {
 			std::string sizeString(payload, payloadLength);
 			try {
@@ -277,9 +269,8 @@ int main()
 				packetProcessedCorrectly = false;
 			}
 		}
-		// --------------
 
-		// START RECEIVING
+
 		else if (memcmp(buffer_rx, "STRT", 4) == 0) {
 			std::cout << "START received, opening output file...\n";
 			outputFile.open(outputFileName, std::ios::binary);
@@ -292,9 +283,8 @@ int main()
 				std::cout << "Output file opened successfully.\n";
 			}
 		}
-		// --------------
 
-		// DATA RECEIVING
+
 		else if (memcmp(buffer_rx, "DATA", 4) == 0) {
 			uint32_t offset = 0;
 			memcpy(&offset, buffer_rx + 4, sizeof(uint32_t));
@@ -316,9 +306,8 @@ int main()
 				}
 			}
 		}
-		// --------------
 
-		// HASH RECEIVING
+
 		else if (memcmp(buffer_rx, "HASH", 4) == 0) {
 			expectedHash.assign(payload, payloadLength);
 
@@ -326,9 +315,8 @@ int main()
 				<< expectedHash
 				<< "\n";
 		}
-		// --------------
 
-		// STOP RECEIVING
+
 		else if (memcmp(buffer_rx, "STOP", 4) == 0) {
 			std::cout << "STOP received, closing output file...\n";
 			if (outputFile.is_open()) {
@@ -377,16 +365,14 @@ int main()
 			sendControlPacket(socketS, addrDest, table, "ACK ", packetBit);
 			isReceiving = false;
 		}
-		// --------------
 
-		// INCORECT IDENTIFIER RECEIVING
+
 		else {
 			std::cout << "Unknown packet type: " << packetId << "\n";
 			packetProcessedCorrectly = false;
 		}
-		// -----------------------------
 
-		// ACKNOWLEDGEMENT SENDING
+
 		if (packetProcessedCorrectly) {
 			std::cout << "CRC OK -> sending ACK\n";
 			sendControlPacket(socketS, addrDest, table, "ACK ", packetBit);
@@ -396,7 +382,7 @@ int main()
 			std::cout << "PACKET NOT PROCESSED CORRECTLY -> sending NAK\n";
 			sendControlPacket(socketS, addrDest, table, "NAK ", packetBit);
 		}
-		// -----------------------
+
 	}
 	std::cout << "*********************************************\n";
 	std::cout << "RECEIVING FINISHED!.\n";
