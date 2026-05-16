@@ -13,6 +13,7 @@
 #include "crc.h"
 #include "sha256.h"
 #include <stdexcept>
+#include <cmath>
 
 #define TARGET_IP "127.0.0.1"
 #define BUFFERS_LEN 1024
@@ -21,8 +22,8 @@
 #define DATA_PAYLOAD_SIZE (BUFFERS_LEN - HEADER_LENGTH)
 #define RECEIVE_WINDOW_SIZE 20
 
-//#define SENDER
-#define RECEIVER
+#define SENDER
+//#define RECEIVER
 
 #ifdef SENDER
 #define TARGET_PORT 14000
@@ -89,8 +90,6 @@ void InitWinsock()
 	WSADATA wsaData;
 	WSAStartup(MAKEWORD(2, 2), &wsaData);
 }
-
-// ODSTRAN ALTERNATING BIT
 
 int main()
 {
@@ -168,16 +167,13 @@ int main()
 	sendPacket(startStruct, myContext, table);
 	std::cout << "*********************************************\n";
 
-	// THIS IM CHANGING
 	uint32_t offsetNum = 0;
 	int packetNum = 1;
-
-	// vytvorim si pole tady 20 structur
 	windowSlot windowArray[RECEIVE_WINDOW_SIZE] = {};
 	bool stillSendingData = true;
 	bool stillInProccess = true;
+	std::cout << "SENDING DATA PACKETS!\n";
 	while (stillInProccess) {
-		// SENDING
 		for (size_t windowIndex = 0; windowIndex < RECEIVE_WINDOW_SIZE; ++windowIndex) {
 			if (!stillSendingData) {
 				break;
@@ -194,62 +190,70 @@ int main()
 				windowArray[windowIndex].pcktData = { "DATA", windowArray[windowIndex].payload, fileReadLen, offsetNum };
 				windowArray[windowIndex].time = GetTickCount();
 				windowArray[windowIndex].state = SEND;
+				uint32_t currentBasePacket = (windowArray[0].state != EMPTY) ?
+					(windowArray[0].pcktData.offset / DATA_PAYLOAD_SIZE): (offsetNum / DATA_PAYLOAD_SIZE);
+				uint32_t maxWindowPacket = currentBasePacket + (RECEIVE_WINDOW_SIZE - 1);
+				std::cout << "-->[OUT]--> Sending PACKET " << packetNum << ", OFFSET = " << offsetNum
+						  << ", Window (indexes): [" << currentBasePacket << " - " << maxWindowPacket << "]\n";
 				sendSelectiveRepeatPacket(windowArray[windowIndex].pcktData, myContext, table);
 				offsetNum += fileReadLen;
 				packetNum++;
 			}
 		}
-		// LISTENING
+
 		struct sockaddr_in from;
 		int fromlen = sizeof(from);
 		char buffer_rx[BUFFERS_LEN];
-
 		int recVal = recvfrom(myContext.socketS, buffer_rx, BUFFERS_LEN, 0, (sockaddr*)&from, &fromlen);
-		if (recVal == -1) {
-			std::cout << "ERROR_TIMEOUT: Haven't received a response in time!\n";
-		}
-		else if (!checkBufferForCRC(buffer_rx, table, recVal)) {
-			std::cout << "ERROR_ACK: Received acknowldegement does NOT correspond with the expected!\n";
-		}
-		else {
+		if (recVal != -1 && checkBufferForCRC(buffer_rx, table, recVal)) {
 			bool isACK = (memcmp(buffer_rx, "ACK ", 4) == 0);
 			uint32_t offset = getPacketOffset(buffer_rx);
+			uint32_t incomingPacketNum = (offset / DATA_PAYLOAD_SIZE) + 1;
 			for (size_t windowIndex = 0; windowIndex < RECEIVE_WINDOW_SIZE; ++windowIndex) {
-				if (windowArray[windowIndex].pcktData.offset == offset) {
+				if (windowArray[windowIndex].state != EMPTY && windowArray[windowIndex].pcktData.offset == offset) {
 					if (isACK) {
+						std::cout << "<--[IN]<-- ACK for PACKET " << incomingPacketNum << " received!\n";
 						windowArray[windowIndex].state = ACKNOWLEDGED;
 					}
 					else {
+						std::cout << "<--[IN]<-- !!!NAK for PACKET " << incomingPacketNum << " received!!! Resending!\n";
 						windowArray[windowIndex].time = GetTickCount();
 						sendSelectiveRepeatPacket(windowArray[windowIndex].pcktData, myContext, table);
 					}
+					
 					break;
 				}
 			}
-
 		}
-		// TIME MANAGING
+
 		for (size_t windowIndex = 0; windowIndex < RECEIVE_WINDOW_SIZE; ++windowIndex) {
 			if (windowArray[windowIndex].state != SEND) {
 				continue;
 			}
 			if (GetTickCount() - windowArray[windowIndex].time >= WAIT_TIMER) {
+				uint32_t timeoutPacketNum = (windowArray[windowIndex].pcktData.offset / DATA_PAYLOAD_SIZE) + 1;
+				std::cout << " !!![ERROR]!!! TIMEOUT: PACKET " << timeoutPacketNum << " Resending!\n";
 				windowArray[windowIndex].time = GetTickCount();
 				sendSelectiveRepeatPacket(windowArray[windowIndex].pcktData, myContext, table);
 			}
 		}
-		// WINDOW SLIDING
+		bool windowSlide = false;
+		uint32_t oldBase = windowArray[0].pcktData.offset;
+		uint32_t oldBasePacket = (oldBase / DATA_PAYLOAD_SIZE) + 1;
 		while (windowArray[0].state == ACKNOWLEDGED) {
+			windowSlide = true;
 			for (size_t windowIndex = 0; windowIndex < RECEIVE_WINDOW_SIZE - 1; ++windowIndex) {
 				windowArray[windowIndex] = windowArray[windowIndex + 1];
-				// jeste musim upravit ze ukazuje na vlastni payload a ne na payload toho druheho
 				windowArray[windowIndex].pcktData.data = windowArray[windowIndex].payload;
 			}
-			// timto muzu vycistit struct
 			windowArray[RECEIVE_WINDOW_SIZE - 1] = windowSlot{};
 			windowArray[RECEIVE_WINDOW_SIZE - 1].state = EMPTY;
 		}
-
+		if (windowSlide) {
+			uint32_t currentBase = (windowArray[0].state != EMPTY) ? windowArray[0].pcktData.offset : offsetNum;
+			uint32_t currentBasePacket = (currentBase / DATA_PAYLOAD_SIZE) + 1;
+			std::cout << "***[INFO]*** WINDOW SLIDE: Packets [" << oldBasePacket << " -> " << currentBasePacket << "]\n";
+		}
 		if (!stillSendingData) {
 			stillInProccess = false;
 			for (size_t windowIndex = 0; windowIndex < RECEIVE_WINDOW_SIZE; ++windowIndex) {
@@ -260,7 +264,6 @@ int main()
 			}
 		}
 	}
-	// THIS IM CHANGING
 
 	std::cout << "ALL DATA PACKETS WERE SUCCESSFULLY SENT!\n";
 	std::cout << "*********************************************\n";
@@ -315,9 +318,9 @@ int main()
 	std::vector<int> receivedDataLengths;
 
 	std::cout << "*********************************************\n";
-	std::cout << "Waiting for data!\n";
 	std::cout << "Selective Repeat receiver window size: " << RECEIVE_WINDOW_SIZE << "\n";
 	std::cout << "DATA payload size: " << DATA_PAYLOAD_SIZE << " bytes\n";
+	std::cout << "Waiting for data!\n";
 	std::cout << "*********************************************\n";
 
 	while (isReceiving) {
@@ -325,11 +328,6 @@ int main()
 		fromlen = sizeof(from);
 
 		int receivedLength = recvfrom(socketS, buffer_rx, sizeof(buffer_rx), 0, (sockaddr*)&from, &fromlen);
-		/*
-		if (receivedLength != SOCKET_ERROR) {
-			addrDest = from;
-		}
-		*/
 		if (receivedLength == SOCKET_ERROR) {
 			int error = WSAGetLastError();
 			if (error == WSAETIMEDOUT) {
@@ -431,7 +429,7 @@ int main()
 		else if (memcmp(buffer_rx, "DATA", 4) == 0) {
 			uint32_t offset = packetOffset;
 			int packetIndex = getDataPacketIndex(offset);
-			std::cout << "DATA packet index: " << packetIndex << ", receive window: [" << receiveBasePacket
+			std::cout << "DATA packet index: " << packetIndex << ", RECEIVE WINDOW: [" << receiveBasePacket
 				<< " - " << (receiveBasePacket + RECEIVE_WINDOW_SIZE - 1) << "]\n";
 			if (!outputFile.is_open()) {
 				std::cout << "Output file is not open, DATA packet ignored -> sending NAK\n";
@@ -444,7 +442,7 @@ int main()
 				continue;
 			}
 			if (packetIndex < receiveBasePacket) {
-				std::cout << "Old duplicate DATA packet -> sending ACK again for offset " << offset << "\n";
+				std::cout << "Sending ACK.\n";
 				sendControlPacketForOffset(socketS, addrDest, table, "ACK ", offset, packetBit);
 				continue;
 			}
@@ -468,18 +466,17 @@ int main()
 			receivedDataLengths[packetIndex] = payloadLength;
 			receivedBytes += payloadLength;
 			receivedPackets++;
-			std::cout << "DATA accepted. packetIndex = " << packetIndex << ", offset = " << offset << ", data length = "
-					  << payloadLength << ", received bytes = " << receivedBytes << " / " << expectedFileSize << "\n";
 			sendControlPacketForOffset(socketS, addrDest, table, "ACK ", offset, packetBit);
 			int oldReceiveBasePacket = receiveBasePacket;
 			slideReceiveWindow(receivedDataPackets, receiveBasePacket);
-			std::cout << "Receive base moved to packet index: " << receiveBasePacket << "\n";
 			if (receiveBasePacket == oldReceiveBasePacket && packetIndex > receiveBasePacket) {
 				uint32_t missingOffset = static_cast<uint32_t>(receiveBasePacket * DATA_PAYLOAD_SIZE);
-				std::cout << "Gap detected. First missing packet index: " << receiveBasePacket << ", missing offset: "
+				std::cout << "GAP DETECTED. First missing packet index: " << receiveBasePacket << ", missing offset: "
 						  << missingOffset << " -> sending NAK\n";
 				sendControlPacketForOffset(socketS, addrDest, table, "NAK ", missingOffset, packetBit);
+				continue;
 			}
+			std::cout << "Sending ACK.\n";
 			continue;
 		}
 		else if (memcmp(buffer_rx, "HASH", 4) == 0) {
@@ -492,12 +489,12 @@ int main()
 		else if (memcmp(buffer_rx, "STOP", 4) == 0) {
 			if (!receivedDataPackets.empty() && !allDataPacketsReceived(receivedDataPackets)) {
 				uint32_t missingOffset = getFirstMissingOffset(receivedDataPackets);
-				std::cout << "STOP received, but some DATA packets are still missing. First missing offset: "
+				std::cout << "STOP received. Some DATA packets still missing. First missing offset: "
 						  << missingOffset << " -> sending NAK\n";
 				sendControlPacketForOffset(socketS, addrDest, table, "NAK ", missingOffset, packetBit);
 				continue;
 			}
-			std::cout << "STOP received and all DATA packets are present, closing output file...\n";
+			std::cout << "STOP received. All DATA packets present, closing output file!\n";
 			if (outputFile.is_open()) {
 				outputFile.close();
 			}
